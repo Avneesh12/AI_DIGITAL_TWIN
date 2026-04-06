@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     # ── Embeddings ───────────────────────────────────────────────────────────
     EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    HF_TOKEN: str | None = None 
     EMBEDDING_DIMENSION: int = 384
 
     # ── Memory / RAG ─────────────────────────────────────────────────────────
