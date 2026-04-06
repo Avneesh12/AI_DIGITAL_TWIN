@@ -1,16 +1,5 @@
 """
 app/services/chat_service.py
-─────────────────────────────
-Orchestrates the complete 5-phase chat pipeline:
-
-Phase 1 — Auth & context loading    (done upstream in dependency)
-Phase 2 — Memory retrieval (RAG)
-Phase 3 — Prompt construction
-Phase 4 — LLM response generation
-Phase 5 — Persistence & return
-
-This service intentionally does NOT know about HTTP — it operates
-on domain objects and is fully unit-testable with mocks.
 """
 from __future__ import annotations
 
@@ -18,6 +7,7 @@ import asyncio
 import uuid
 
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.personality import PersonalityProfile
 from app.models.user import User
@@ -28,8 +18,8 @@ from app.services.ai_service import AIService
 from app.services.memory_service import MemoryService
 from app.services.personality_service import PersonalityService
 from app.services.prompt_builder import PromptBuilder
+from app.core.database import AsyncSessionFactory
 
-# After this many chats, trigger a personality auto-learn cycle
 PERSONALITY_UPDATE_THRESHOLD = 10
 
 
@@ -51,10 +41,6 @@ class ChatService:
         self._prompt = prompt_builder
 
     async def handle(self, user: User, request: ChatRequest) -> ChatResponse:
-        """
-        Execute the full chat pipeline for a single user message.
-        Returns a ChatResponse ready for the HTTP layer.
-        """
         user_id = str(user.id)
         session_id = request.session_id or uuid.uuid4()
 
@@ -63,7 +49,6 @@ class ChatService:
         # ── Phase 1: Load personality profile ──────────────────────────────
         profile = await self._personality_repo.get_by_user_id(user.id)
         if profile is None:
-            # First-time user: create a blank profile, it will evolve over time
             profile = await self._personality_repo.create(user.id)
 
         # ── Phase 2: Memory retrieval (RAG) ────────────────────────────────
@@ -73,7 +58,7 @@ class ChatService:
         )
         logger.debug("Memories retrieved", count=len(memories))
 
-        # ── Phase 2b: Load recent session turns for in-context coherence ───
+        # ── Phase 2b: Load recent session turns ────────────────────────────
         recent_turns = await self._load_session_turns(user.id, session_id)
 
         # ── Phase 3: Prompt construction ───────────────────────────────────
@@ -92,7 +77,6 @@ class ChatService:
         # ── Phase 5: Persist ────────────────────────────────────────────────
         memory_ids = [str(m.get("point_id", "")) for m in memories]
 
-        # Save user message
         user_chat = await self._chat_repo.create(
             user_id=user.id,
             session_id=session_id,
@@ -102,7 +86,6 @@ class ChatService:
             memory_ids_used=[],
         )
 
-        # Save assistant response
         asst_chat = await self._chat_repo.create(
             user_id=user.id,
             session_id=session_id,
@@ -163,15 +146,24 @@ class ChatService:
                 assistant_response=assistant_response,
             )
         except Exception as e:
-            # Memory storage failure is non-fatal — log and continue
             logger.error("Background memory storage failed", error=str(e))
 
     async def _maybe_update_personality(self, user_id: str) -> None:
         try:
-            import uuid as _uuid
-            count = await self._chat_repo.count_user_chats(_uuid.UUID(user_id))
+            uid = uuid.UUID(user_id)
+            
+            async with AsyncSessionFactory() as session:  # ← own fresh session
+                try:
+                    bg_chat_repo = ChatRepository(session)
+                    count = await bg_chat_repo.count_user_chats(uid)
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
             if count > 0 and count % PERSONALITY_UPDATE_THRESHOLD == 0:
                 logger.info("Triggering personality auto-learn", user_id=user_id, chat_count=count)
                 await self._personality_svc.auto_learn_from_chats(user_id)
-        except Exception as e:
-            logger.error("Background personality update failed", error=str(e))
+
+        except Exception:
+            logger.exception("Background personality update failed")
