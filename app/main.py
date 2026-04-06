@@ -17,8 +17,7 @@ from app.core.database import engine
 from app.core.embedder import get_embedder
 from app.core.exceptions import register_exception_handlers
 from app.core.qdrant_client import ensure_collection_exists, get_qdrant_client
-import os
-import uvicorn
+
 settings = get_settings()
 
 
@@ -31,39 +30,67 @@ async def lifespan(app: FastAPI):
     from alembic.config import Config
     from alembic import command
     from app.core.database import Base, engine
-    from app.models.user import User                       # noqa
-    from app.models.chat import Chat                       # noqa
-    from app.models.personality import PersonalityProfile  # noqa
-    from app.models.decision import Decision               # noqa
+    from app.models.user import User
+    from app.models.chat import Chat
+    from app.models.personality import PersonalityProfile
+    from app.models.decision import Decision
 
-    # Step 1 — Create any new tables that don't exist yet
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables ready ✓")
+    # Step 1 — DB tables
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables ready ✓")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        raise  # fatal — can't run without DB
 
-    # Step 2 — Apply any migration files present in versions/
-    def apply_migrations():
-        alembic_cfg = Config(
-            os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
-        )
-        command.upgrade(alembic_cfg, "head")
+# Run this in terminal
 
-    await asyncio.get_event_loop().run_in_executor(None, apply_migrations)
-    logger.info("Migrations applied ✓")
+    # Step 2 — Migrations
+    try:
+        def apply_migrations():
+            alembic_cfg = Config(
+                os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
+            )
+            command.upgrade(alembic_cfg, "head")
 
-    embedder = get_embedder()
-    logger.info("Embedder ready", dimension=embedder.dimension)
+        await asyncio.get_event_loop().run_in_executor(None, apply_migrations)
+        logger.info("Migrations applied ✓")
+    except Exception as e:
+        logger.error(f"Migrations failed: {e}")
+        raise  # fatal — schema may be out of sync
 
-    qdrant = get_qdrant_client()
-    await ensure_collection_exists(qdrant)
-    logger.info("Qdrant ready")
+    # Step 3 — Embedder (non-fatal)
+    try:
+        embedder = get_embedder()
+        logger.info("Embedder ready", dimension=embedder.dimension)
+    except Exception as e:
+        logger.warning(f"Embedder init failed (non-fatal): {e}")
+
+    # Step 4 — Qdrant (non-fatal)
+    try:
+        qdrant = get_qdrant_client()
+        await ensure_collection_exists(qdrant)
+        logger.info("Qdrant ready ✓")
+    except Exception as e:
+        logger.warning(f"Qdrant connection failed (non-fatal): {e}")
+        qdrant = None  # handle None safely in routes
 
     logger.info("API startup complete — ready to serve requests")
     yield
 
-    logger.info("Shutting down API")
-    await engine.dispose()
-    await qdrant.close()
+    # Shutdown
+    try:
+        await engine.dispose()
+    except Exception as e:
+        logger.warning(f"Engine dispose error: {e}")
+
+    try:
+        if qdrant:
+            await qdrant.close()
+    except Exception as e:
+        logger.warning(f"Qdrant close error: {e}")
+
     logger.info("Shutdown complete")
 
 def create_app() -> FastAPI:
@@ -103,8 +130,3 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # ✅ important
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
