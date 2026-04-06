@@ -17,7 +17,8 @@ from app.core.database import engine
 from app.core.embedder import get_embedder
 from app.core.exceptions import register_exception_handlers
 from app.core.qdrant_client import ensure_collection_exists, get_qdrant_client
-
+import os
+import uvicorn
 settings = get_settings()
 
 
@@ -102,3 +103,8 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))  # ✅ important
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port)
