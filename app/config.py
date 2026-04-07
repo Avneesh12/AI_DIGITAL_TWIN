@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # ── Rate Limiting ────────────────────────────────────────────────────────
     RATE_LIMIT_PER_MINUTE: int = 60
 
+    BREVO_API_KEY : str
+    EMAIL_SENDER : str
+    EMAIL_SENDER_NAME : str 
+    FRONTEND_URL : str 
+
     @property
     def DATABASE_URL(self):
         return (

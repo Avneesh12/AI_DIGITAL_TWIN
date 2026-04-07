@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import BackgroundTasks
+from app.services.email_service import send_welcome_email
 
 from app.core.exceptions import AuthenticationError, ConflictError
 from app.core.security import (
@@ -19,7 +21,7 @@ class AuthService:
     def __init__(self, user_repo: UserRepository) -> None:
         self._users = user_repo
 
-    async def register(self, data: RegisterRequest) -> TokenResponse:
+    async def register(self, data: RegisterRequest,background_tasks: BackgroundTasks) -> TokenResponse:
         if await self._users.exists_email(data.email):
             raise ConflictError("Email already registered")
         if await self._users.exists_username(data.username):
@@ -29,6 +31,11 @@ class AuthService:
             email=data.email,
             username=data.username,
             password_hash=hash_password(data.password),
+        )
+        background_tasks.add_task(
+            send_welcome_email,
+            user.email,
+            user.username
         )
 
         return TokenResponse(

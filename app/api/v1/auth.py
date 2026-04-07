@@ -1,7 +1,7 @@
 """app/api/v1/auth.py — /register, /login, /refresh endpoints."""
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, BackgroundTasks
 
 from app.dependencies import get_auth_service
 from app.schemas.auth import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse
@@ -14,9 +14,10 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 async def register(
     data: RegisterRequest,
     auth_svc: Annotated[AuthService, Depends(get_auth_service)],
+    background_tasks: BackgroundTasks,
 ) -> TokenResponse:
     """Register a new user and return access + refresh tokens."""
-    return await auth_svc.register(data)
+    return await auth_svc.register(data,background_tasks)
 
 
 @router.post("/login", response_model=TokenResponse)
